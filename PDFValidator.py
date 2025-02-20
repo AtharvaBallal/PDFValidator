@@ -1,5 +1,4 @@
 import os
-from time import strftime
 import fitz
 import openpyxl
 import datetime
@@ -9,16 +8,14 @@ import numpy as np
 from PIL import Image
 
 
-# -------------------------------
-# Utility Functions
-# -------------------------------
 
 def normalize_text(text):
     return ' '.join(text.split())
 
+def get_position_lable(x, y, page_width, page_height):
+    vertical_position = ''
+    horizontal_position = ''
 
-def get_position_label(x, y, page_width, page_height):
-    # Determine vertical position
     if y < page_height / 3:
         vertical_position = 'top'
     elif y < 2 * page_height / 3:
@@ -26,7 +23,6 @@ def get_position_label(x, y, page_width, page_height):
     else:
         vertical_position = 'bottom'
 
-    # Determine horizontal position
     if x < page_width / 3:
         horizontal_position = 'left'
     elif x < 2 * page_width / 3:
@@ -34,127 +30,90 @@ def get_position_label(x, y, page_width, page_height):
     else:
         horizontal_position = 'right'
 
-    # Combine positions into human-readable format
     if horizontal_position == 'center':
         return vertical_position
     else:
         return f"{vertical_position} {horizontal_position}"
 
-
 def image_to_numpy(image_path):
     image = Image.open(image_path).convert('RGB')
-    return np.array(image)
-
+    return  np.array(image)
 
 def search_image_in_pdf(page, image_array):
-    # Render page to image
     pix = page.get_pixmap()
-    page_image = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    page_image = Image.frombytes("RGB", [pix.width, pix.height], pix.sample)
     page_array = np.array(page_image)
 
-    # Convert to grayscale
+    #Convert images to greay scale
     page_gray = cv2.cvtColor(page_array, cv2.COLOR_BGR2GRAY)
     template_gray = cv2.cvtColor(image_array, cv2.COLOR_BGR2GRAY)
 
-    # Initialize SIFT detector
+    #Inizialize SIFT detector
+
     sift = cv2.SIFT_create()
 
-    # Find keypoints and descriptors with SIFT
+    # Find the keypoints and descriptors with SIFT
+
     kp1, des1 = sift.detectAndCompute(template_gray, None)
     kp2, des2 = sift.detectAndCompute(page_gray, None)
 
-    # Setup FLANN parameters and matcher
+    #Flann parameters
+
     FLANN_INDEX_KDTREE = 1
-    index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
-    search_params = dict(checks=50)
+    index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
+    search_params = dict(checks = 50)
+
     flann = cv2.FlannBasedMatcher(index_params, search_params)
 
-    # Perform knn matching
     matches = flann.knnMatch(des1, des2, k=2)
 
-    # Apply Lowe's ratio test to find good matches
+    #store all the good matches as per lowe's ratio test.
+
     good_matches = []
-    for m, n in matches:
+    for m,n in matches:
         if m.distance < 0.7 * n.distance:
             good_matches.append(m)
 
-    # If sufficient matches are found, determine the average position
+    #check if matches are found
     if len(good_matches) > 10:
-        dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 2)
+        #get co-ordinates of matched img
+        src_pts =np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 2)
+        dst_pts =np.float32([kp2[m.queryIdx].pt for m in good_matches]).reshape(-1, 2)
         x, y = np.mean(dst_pts, axis=0)
         return True, (x, y)
     return False, None
 
 
-# -------------------------------
-# Contract Numbers Loading
-# -------------------------------
-
-def load_contract_numbers(contract_file):
-    """
-    Loads contract numbers from an Excel file.
-    Assumes the contract numbers are in the first column (starting from row 2).
-    """
-    wb = openpyxl.load_workbook(contract_file)
-    sheet = wb.active
-    contract_numbers = []
-    for row in sheet.iter_rows(min_row=2, values_only=True):
-        if row[0]:
-            contract_numbers.append(str(row[0]).strip())
-    return contract_numbers
-
-
-# -------------------------------
-# PDF Validation Functions
-# -------------------------------
-
-def validate_pdf_strings(pdf_type, pdf_path, expected_position, sheet, contract_numbers, data_type):
-    """
-    Validates that each contract number (from contract_numbers list) is present in the PDF.
-    For each contract number, if found in any page, reports all found occurrences.
-    If not found in the entire PDF, reports a single "Not Found" row.
-    """
+def validate_pdf_strings(pdf_type, pdf_path, search_string, expected_position, sheet):
     try:
         document = fitz.open(pdf_path)
         pdf_name = os.path.basename(pdf_path)
-        for contract in contract_numbers:
-            normalized_contract = normalize_text(contract)
-            found_any = False
-            # Search across all pages
-            for page_num in range(len(document)):
-                page = document.load_page(page_num)
-                text_instances = page.search_for(normalized_contract)
-                page_height = page.rect.height
-                page_width = page.rect.width
-                reported_positions = set()
-                if text_instances:
-                    for inst in text_instances:
-                        position_label = get_position_label(inst.x0, inst.y0, page_width, page_height)
-                        position_key = (page_num, round(inst.x0, 2), round(inst.y0, 2))
-                        if position_key not in reported_positions:
-                            reported_positions.add(position_key)
-                            coordinates = f"({inst.x0}, {inst.y0})"
-                            status = 'Pass' if position_label == expected_position else 'Fail'
-                            sheet.append(
-                                [pdf_type, pdf_path, pdf_name, data_type, contract, page_num + 1, 'Found', coordinates,
-                                 position_label, status])
-                            print(
-                                f"Processing {pdf_type}, page {page_num + 1}, contract {contract}: Found at {coordinates} ({position_label}) - {status}")
-                            found_any = True
-            if not found_any:
-                # Report not found once for this contract in the PDF with status updated to "Not Found"
-                sheet.append(
-                    [pdf_type, pdf_path, pdf_name, data_type, contract, 'N/A', 'Not Found', 'N/A', 'N/A', 'Not Found'])
-                print(f"Processing {pdf_type}, contract {contract}: Not Found in {pdf_name}")
+        normalized_search_string = normalize_text(search_string)
+        for page_num in range(len(document)):
+            page = document.load_page(page_num)
+            text_instances = page.search_for(normalized_search_string)
+            page_height = page.rect.height
+            page_width = page.rect.width
+            reported_positions = set()
+            if text_instances:
+                for inst in text_instances:
+                    position_label = get_position_lable(inst.x0, inst.y0, page_width, page_height)
+                    position_key = (page_num, round(inst.x0, 2), round(inst.y0,2)) #use rounded co-ordinates for precesion
+                    if position_key not in reported_positions:
+                        reported_positions.add(position_key)
+                        coordinates = f"({inst.x0}, {inst.y0})"
+                        status = 'Pass' if position_label == expected_position else 'Fail'
+                        sheet.append([pdf_type, pdf_path, pdf_name, page_num +1, 'Found', coordinates, position_label, status])
+                        print(f"Processing {pdf_type}, page {page_num + 1}: Found at {coordinates} {position_label} - {status}")
+                    else:
+                        sheet.append([pdf_type, pdf_path, pdf_name, page_num + 1, 'Not Found', 'Not Found', 'Not Found'])
+                        print(f"Processing {pdf_type}, page {page_num + 1}: Not Found at ")
+
     except Exception as e:
         print(f"Error reading {pdf_path}: {e}")
 
 
-def validate_pdf_images(pdf_type, pdf_path, image_path, expected_position, sheet, data_type):
-    """
-    Validates that an image (given by image_path) is present in the PDF.
-    The matching is done by content (using SIFT), ignoring size differences.
-    """
+def validate_pdf_images(pdf_type, pdf_path, image_path,expected_position, sheet):
     try:
         document = fitz.open(pdf_path)
         pdf_name = os.path.basename(pdf_path)
@@ -162,107 +121,85 @@ def validate_pdf_images(pdf_type, pdf_path, image_path, expected_position, sheet
         for page_num in range(len(document)):
             page = document.load_page(page_num)
             found, coordinates = search_image_in_pdf(page, image_array)
-            page_height = page.rect.height
-            page_width = page.rect.width
             if found:
                 x, y = coordinates
-                position_label = get_position_label(x, y, page_width, page_height)
+                page_height = page.rect.height
+                page_width = page.rect.width
+                position_label = get_position_lable(x, y, page_width, page_height)
                 status = 'Pass' if position_label == expected_position else 'Fail'
-                # For image validation, contract number is "N/A"
-                sheet.append([pdf_type, pdf_path, pdf_name, data_type, "N/A", page_num + 1, 'Found', f"({x}, {y})",
-                              position_label, status])
-                print(
-                    f"Processing {pdf_type}, page {page_num + 1}: Image Found at ({x}, {y}) ({position_label}) - {status}")
+                sheet.append([pdf_type, pdf_path, pdf_name, page_num + 1, 'Found', f"({x}, {y})", position_label, status])
+                print(f"Processing {pdf_type}, page {page_num + 1}: Image Found at ({x}, {y}) {position_label} - {status}")
+
             else:
-                sheet.append(
-                    [pdf_type, pdf_path, pdf_name, data_type, "N/A", page_num + 1, 'Not Found', 'Image Not Found',
-                     'N/A', 'Not Found'])
-                print(f"Processing {pdf_type}, page {page_num + 1}: Image Not Found - Not Found")
+                sheet.append([pdf_type, pdf_path, pdf_name, page_num + 1, 'Not Found', 'Image Not Found', 'Image Not Found', 'Fail'])
+                print(f"Processing {pdf_type}, page {page_num + 1}: Image Not Found - Fail ")
+
     except Exception as e:
         print(f"Error reading {pdf_path}: {e}")
 
-
-# -------------------------------
-# Runner: Process PDFs as per Runner Excel
-# -------------------------------
-
-def validate_pdfs_from_runner(runner_file, output_folder, contract_file):
-    # Move existing report files to the Archive Reports folder
-    archive_folder = os.path.join(output_folder, 'Archive Reports')
+def validate_pdfs_from_runner(runner_file, output_folder):
+    #Move existing report files to the Archive Reports folder
+    archive_folder = os.path.join(output_folder,'Archive Reports')
     os.makedirs(archive_folder, exist_ok=True)
     for filename in os.listdir(output_folder):
         if filename.endswith('.xlsx'):
             try:
-                shutil.move(os.path.join(output_folder, filename), os.path.join(archive_folder, filename))
+                shutil.move(os.path.join(output_folder, filename),os.path.join(archive_folder,filename))
             except PermissionError:
                 print("Please close all the reports and re-run again.")
                 return
 
-    # Create a new report file with the current date and timestamp
+    #Create a new report file with the current date and timestamp
     timestamp = datetime.datetime.now().strftime('%y%m%d_%H%M%S')
-    output_excel = os.path.join(output_folder, f'validation_report_{timestamp}.xlsx')
+    output_excel = os.path.join(output_folder, f'validation_report{timestamp}.xlsx')
+
     workbook = openpyxl.Workbook()
 
-    # Load the runner Excel file
+    #Load the runner Excel file
+
     runner_wb = openpyxl.load_workbook(runner_file)
     runner_sheet = runner_wb.active
 
-    # Load contract numbers for text validations
-    contract_numbers = load_contract_numbers(contract_file)
-
-    # Dictionary to hold the count of sheets created per pdf_type
-    sheet_counts = {}
     sheets = {}
+    sheet_counts = {}
 
-    # Loop through each row of the runner file (starting from row 2)
-    # Expected columns: pdf_type, pdf_folder_path, run, data_type, expected_value, expected_position
     for row in runner_sheet.iter_rows(min_row=2, values_only=True):
-        pdf_type, pdf_folder_path, run, data_type, expected_value, expected_position = row
+        pdf_type, pdf_folder_path, run,data_type, expected_value, expected_position = row
 
         if run.lower() == 'yes':
-            pdf_type_str = str(pdf_type)
-            # Increase count for this pdf_type to index the new sheet
+            pdf_type_str = str(pdf_type) #convert pdf_type to string
             if pdf_type_str not in sheet_counts:
                 sheet_counts[pdf_type_str] = 0
             sheet_counts[pdf_type_str] += 1
             sheet_name = f"{pdf_type_str}_{sheet_counts[pdf_type_str]}"
             sheets[sheet_name] = workbook.create_sheet(title=sheet_name)
-            # Header row now includes Data Type
-            sheets[sheet_name].append(
-                ["PDF Type", "PDF Path", "PDF Name", "Data Type", "Contract Number", "Page Number", "Found Status",
-                 "Co-Ordinates", "Position", "Status"])
-
-            # Process each PDF file in the folder for this runner row
+            sheets[sheet_name].append(["PDF Type", "PDF Path", "PDF name", "Page Number", "Found Status", "Co-Ordinates", "Position", "Status"])
             for filename in os.listdir(pdf_folder_path):
                 pdf_path = os.path.join(pdf_folder_path, filename)
-                print(f"Processing file: {pdf_path}")
+                print(f"Processing {pdf_path}")
                 if data_type.lower() == 'img':
-                    # For image validation, expected_value is the image file path.
-                    validate_pdf_images(pdf_type, pdf_path, expected_value, expected_position, sheets[sheet_name],
-                                        data_type)
+                    validate_pdf_images(pdf_type,pdf_path,expected_value,expected_position,sheets[sheet_name])
                 else:
-                    # For text validation, use contract numbers loaded from the contract Excel file.
-                    validate_pdf_strings(pdf_type, pdf_path, expected_position, sheets[sheet_name], contract_numbers,
-                                         data_type)
+                    validate_pdf_strings(pdf_type,pdf_path,expected_value,expected_position,sheets[sheet_name])
 
-    # Remove the default sheet created by openpyxl (if it still exists)
+    #Remove the default sheet created by openpyxl
     if 'Sheet' in workbook.sheetnames:
         del workbook['Sheet']
 
     try:
         workbook.save(output_excel)
-        print(f"Validation report saved: {output_excel}")
     except PermissionError:
         print("Please close all the reports and re-run again.")
 
-
-# -------------------------------
-# Main
-# -------------------------------
-
 if __name__ == "__main__":
-    runner_file = "Input_Data/RunnerData.xlsx"  # Runner Excel with PDF run configurations
-    contract_file = "Input_Data/Contracts.xlsx"  # Excel file containing contract numbers
-    output_folder = "Output_Result"  # Folder to save the report
+    runner_file = "Input_Data/RunnerData.xlsx"
+    output_folder = "Output_Result"
 
-    validate_pdfs_from_runner(runner_file, output_folder, contract_file)
+    validate_pdfs_from_runner(runner_file, output_folder)
+
+
+
+
+
+
+
