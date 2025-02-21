@@ -108,44 +108,44 @@ def load_contract_numbers(contract_file):
 # PDF Validation Functions
 # -------------------------------
 
-def validate_pdf_strings(pdf_type, pdf_path, expected_position, sheet, contract_numbers, data_type):
+def validate_pdf_strings(pdf_type, pdf_path, expected_value, expected_position, sheet, contract_numbers, data_type):
     """
-    Validates that each contract number (from contract_numbers list) is present in the PDF.
-    For each contract number, if found in any page, reports all found occurrences.
-    If not found in the entire PDF, reports a single "Not Found" row.
+    For each contract number, this function:
+      1. Checks if the contract number is present in the PDF.
+      2. If present on a page, searches that page for the expected value.
+      3. If the expected value is found, computes its human-readable position and compares it to the expected position.
+      4. Logs the result with status "Pass" if they match, "Fail" if they don't, or "Not Found" if the expected value is missing.
     """
     try:
         document = fitz.open(pdf_path)
         pdf_name = os.path.basename(pdf_path)
         for contract in contract_numbers:
             normalized_contract = normalize_text(contract)
-            found_any = False
-            # Search across all pages
+            contract_found = False
+            # Iterate over all pages
             for page_num in range(len(document)):
                 page = document.load_page(page_num)
-                text_instances = page.search_for(normalized_contract)
-                page_height = page.rect.height
-                page_width = page.rect.width
-                reported_positions = set()
-                if text_instances:
-                    for inst in text_instances:
-                        position_label = get_position_label(inst.x0, inst.y0, page_width, page_height)
-                        position_key = (page_num, round(inst.x0, 2), round(inst.y0, 2))
-                        if position_key not in reported_positions:
-                            reported_positions.add(position_key)
-                            coordinates = f"({inst.x0}, {inst.y0})"
+                contract_instances = page.search_for(normalized_contract)
+                if contract_instances:
+                    contract_found = True
+                    # On this page, search for the expected value
+                    normalized_expected = normalize_text(expected_value)
+                    expected_instances = page.search_for(normalized_expected)
+                    if expected_instances:
+                        for inst in expected_instances:
+                            position_label = get_position_label(inst.x0, inst.y0, page.rect.width, page.rect.height)
                             status = 'Pass' if position_label == expected_position else 'Fail'
-                            sheet.append(
-                                [pdf_type, pdf_path, pdf_name, data_type, contract, page_num + 1, 'Found', coordinates,
-                                 position_label, status])
-                            print(
-                                f"Processing {pdf_type}, page {page_num + 1}, contract {contract}: Found at {coordinates} ({position_label}) - {status}")
-                            found_any = True
-            if not found_any:
-                # Report not found once for this contract in the PDF with status updated to "Not Found"
-                sheet.append(
-                    [pdf_type, pdf_path, pdf_name, data_type, contract, 'N/A', 'Not Found', 'N/A', 'N/A', 'Not Found'])
-                print(f"Processing {pdf_type}, contract {contract}: Not Found in {pdf_name}")
+                            coordinates = f"({inst.x0}, {inst.y0})"
+                            sheet.append([pdf_type, pdf_path, pdf_name, data_type, contract, page_num + 1, 'Found', coordinates, position_label, status])
+                            print(f"Processing {pdf_type}, page {page_num + 1}, contract {contract}: Expected value found at {coordinates} ({position_label}) - {status}")
+                    else:
+                        # Expected value not found on the page where the contract is present
+                        sheet.append([pdf_type, pdf_path, pdf_name, data_type, contract, page_num + 1, 'Not Found', 'N/A', 'N/A', 'Not Found'])
+                        print(f"Processing {pdf_type}, page {page_num + 1}, contract {contract}: Expected value not found on page.")
+            if not contract_found:
+                # Contract number not found in the entire document
+                sheet.append([pdf_type, pdf_path, pdf_name, data_type, contract, 'N/A', 'Contract Not Found', 'N/A', 'N/A', 'Not Found'])
+                print(f"Processing {pdf_type}, contract {contract}: Contract number not found in document.")
     except Exception as e:
         print(f"Error reading {pdf_path}: {e}")
 
@@ -169,14 +169,10 @@ def validate_pdf_images(pdf_type, pdf_path, image_path, expected_position, sheet
                 position_label = get_position_label(x, y, page_width, page_height)
                 status = 'Pass' if position_label == expected_position else 'Fail'
                 # For image validation, contract number is "N/A"
-                sheet.append([pdf_type, pdf_path, pdf_name, data_type, "N/A", page_num + 1, 'Found', f"({x}, {y})",
-                              position_label, status])
-                print(
-                    f"Processing {pdf_type}, page {page_num + 1}: Image Found at ({x}, {y}) ({position_label}) - {status}")
+                sheet.append([pdf_type, pdf_path, pdf_name, data_type, "N/A", page_num + 1, 'Found', f"({x}, {y})", position_label, status])
+                print(f"Processing {pdf_type}, page {page_num + 1}: Image Found at ({x}, {y}) ({position_label}) - {status}")
             else:
-                sheet.append(
-                    [pdf_type, pdf_path, pdf_name, data_type, "N/A", page_num + 1, 'Not Found', 'Image Not Found',
-                     'N/A', 'Not Found'])
+                sheet.append([pdf_type, pdf_path, pdf_name, data_type, "N/A", page_num + 1, 'Not Found', 'Image Not Found', 'N/A', 'Not Found'])
                 print(f"Processing {pdf_type}, page {page_num + 1}: Image Not Found - Not Found")
     except Exception as e:
         print(f"Error reading {pdf_path}: {e}")
@@ -228,9 +224,7 @@ def validate_pdfs_from_runner(runner_file, output_folder, contract_file):
             sheet_name = f"{pdf_type_str}_{sheet_counts[pdf_type_str]}"
             sheets[sheet_name] = workbook.create_sheet(title=sheet_name)
             # Header row now includes Data Type
-            sheets[sheet_name].append(
-                ["PDF Type", "PDF Path", "PDF Name", "Data Type", "Contract Number", "Page Number", "Found Status",
-                 "Co-Ordinates", "Position", "Status"])
+            sheets[sheet_name].append(["PDF Type", "PDF Path", "PDF Name", "Data Type", "Contract Number", "Page Number", "Found Status", "Co-Ordinates", "Position", "Status"])
 
             # Process each PDF file in the folder for this runner row
             for filename in os.listdir(pdf_folder_path):
@@ -238,12 +232,10 @@ def validate_pdfs_from_runner(runner_file, output_folder, contract_file):
                 print(f"Processing file: {pdf_path}")
                 if data_type.lower() == 'img':
                     # For image validation, expected_value is the image file path.
-                    validate_pdf_images(pdf_type, pdf_path, expected_value, expected_position, sheets[sheet_name],
-                                        data_type)
+                    validate_pdf_images(pdf_type, pdf_path, expected_value, expected_position, sheets[sheet_name], data_type)
                 else:
-                    # For text validation, use contract numbers loaded from the contract Excel file.
-                    validate_pdf_strings(pdf_type, pdf_path, expected_position, sheets[sheet_name], contract_numbers,
-                                         data_type)
+                    # For text validation, first validate the contract number and then the expected value on that page.
+                    validate_pdf_strings(pdf_type, pdf_path, expected_value, expected_position, sheets[sheet_name], contract_numbers, data_type)
 
     # Remove the default sheet created by openpyxl (if it still exists)
     if 'Sheet' in workbook.sheetnames:
@@ -261,8 +253,8 @@ def validate_pdfs_from_runner(runner_file, output_folder, contract_file):
 # -------------------------------
 
 if __name__ == "__main__":
-    runner_file = "Input_Data/RunnerData.xlsx"  # Runner Excel with PDF run configurations
-    contract_file = "Input_Data/Contracts.xlsx"  # Excel file containing contract numbers
-    output_folder = "Output_Result"  # Folder to save the report
+    runner_file = "RunnerData.xlsx"   # Runner Excel with PDF run configurations
+    output_folder = "Output_Result"     # Folder to save the report
+    contract_file = "Contracts.xlsx"    # Excel file containing contract numbers
 
     validate_pdfs_from_runner(runner_file, output_folder, contract_file)
