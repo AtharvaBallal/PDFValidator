@@ -104,48 +104,61 @@ def load_contract_numbers(contract_file):
     return contract_numbers
 
 
+def extract_text_at_position(page, x, y, width=100, height=20):
+    """ Extracts text from a small region around given (x, y) coordinates """
+    rect = fitz.Rect(x, y, x + width, y + height)
+    extracted_text = page.get_textbox(rect)
+    return extracted_text.strip() if extracted_text else "No Text Found"
+
+
 # -------------------------------
 # PDF Validation Functions
 # -------------------------------
 
 def validate_pdf_strings(pdf_type, pdf_path, expected_value, expected_position, sheet, contract_numbers, data_type):
     """
-    For each contract number, this function:
-      1. Checks if the contract number is present in the PDF.
-      2. If present on a page, searches that page for the expected value.
-      3. If the expected value is found, computes its human-readable position and compares it to the expected position.
-      4. Logs the result with status "Pass" if they match, "Fail" if they don't, or "Not Found" if the expected value is missing.
+    Validates expected text in a PDF based on contract number presence and extracts nearby text from expected position.
     """
     try:
         document = fitz.open(pdf_path)
         pdf_name = os.path.basename(pdf_path)
+
         for contract in contract_numbers:
             normalized_contract = normalize_text(contract)
             contract_found = False
-            # Iterate over all pages
+
+            # Iterate over all pages to find contract number
             for page_num in range(len(document)):
                 page = document.load_page(page_num)
                 contract_instances = page.search_for(normalized_contract)
+
                 if contract_instances:
                     contract_found = True
-                    # On this page, search for the expected value
                     normalized_expected = normalize_text(expected_value)
                     expected_instances = page.search_for(normalized_expected)
+
                     if expected_instances:
+                        # Expected value found
                         for inst in expected_instances:
                             position_label = get_position_label(inst.x0, inst.y0, page.rect.width, page.rect.height)
+                            extracted_text = extract_text_at_position(page, inst.x0, inst.y0)
                             status = 'Pass' if position_label == expected_position else 'Fail'
                             coordinates = f"({inst.x0}, {inst.y0})"
-                            sheet.append([pdf_type, pdf_path, pdf_name, data_type, contract, page_num + 1, 'Contract Found', 'String Found', coordinates, position_label, status])
-                            print(f"Processing {pdf_type}, page {page_num + 1}, contract {contract}: Expected value found at {coordinates} ({position_label}) - {status}")
+                            sheet.append([pdf_type, pdf_path, pdf_name, data_type, contract, page_num + 1, 'Contract Found',
+                                          'String Found', coordinates, position_label, status, extracted_text])
+                            print(f"Processing {pdf_type}, page {page_num + 1}, contract {contract}: Expected value found at {coordinates} ({position_label}) - {status} | Extracted Text: {extracted_text}")
                     else:
-                        # Expected value not found on the page where the contract is present
-                        sheet.append([pdf_type, pdf_path, pdf_name, data_type, contract, page_num + 1, 'Contract Found', 'String Not Found', 'N/A', 'N/A', 'Not Found'])
-                        print(f"Processing {pdf_type}, page {page_num + 1}, contract {contract}: Expected value not found on page.")
+                        # Expected value NOT found, extract text from the expected position
+                        x, y = map(float, expected_position.strip("()").split(","))
+                        extracted_text = extract_text_at_position(page, x, y)
+                        sheet.append([pdf_type, pdf_path, pdf_name, data_type, contract, page_num + 1, 'Contract Found',
+                                      'String Not Found', f"Expected at ({x}, {y})", expected_position, 'Not Found', extracted_text])
+                        print(f"Processing {pdf_type}, page {page_num + 1}, contract {contract}: Expected value NOT found. Extracted Text: {extracted_text}")
+
             if not contract_found:
-                # Contract number not found in the entire document
-                sheet.append([pdf_type, pdf_path, pdf_name, data_type, contract, 'N/A', 'Contract Not Found', N/A, 'N/A', 'N/A', 'Not Found'])
+                sheet.append([pdf_type, pdf_path, pdf_name, data_type, contract, 'N/A', 'Contract Not Found', 'N/A', 'N/A', 'N/A', 'Not Found', 'N/A'])
                 print(f"Processing {pdf_type}, contract {contract}: Contract number not found in document.")
+
     except Exception as e:
         print(f"Error reading {pdf_path}: {e}")
 
